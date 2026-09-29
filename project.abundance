@@ -1,13 +1,232 @@
 {
-    "atomType": "Molecule",
-    "x": 0,
-    "y": 0,
-    "uniqueID": "id-1239",
-    "name": "Slice_2D_2.0",
-    "topLevel": true,
-    "allAtoms": [],
-    "allConnectors": [],
-    "unitsKey": "MM",
-    "fileTypeVersion": 1,
-    "filetypeVersion": 1
+  "atomType": "Molecule",
+  "x": 0,
+  "y": 0,
+  "uniqueID": "id-1239",
+  "name": "Slice_2D_2.0",
+  "ioValues": [
+    {
+      "name": "Input",
+      "ioValue": "__GEOMETRY_INPUT__"
+    }
+  ],
+  "topLevel": true,
+  "allAtoms": [
+    {
+      "atomType": "Output",
+      "x": 1,
+      "y": 0.5,
+      "uniqueID": "id-1240",
+      "ioValues": [
+        {
+          "name": "number or geometry",
+          "ioValue": "__GEOMETRY_INPUT__"
+        }
+      ]
+    },
+    {
+      "atomType": "Code",
+      "x": 0.6,
+      "y": 0.4,
+      "uniqueID": "id-1242",
+      "ioValues": [
+        {
+          "name": "shape",
+          "ioValue": "__GEOMETRY_INPUT__"
+        }
+      ],
+      "interpreterVersion": 1,
+      "code": "function run(shape: Assembly): Assembly {\n  // Convert one planar face (outer boundary minus its holes) to a world-XY Drawing.\n  function faceToDrawing(face) {\n    let { uMin, uMax, vMin, vMax } = face.UVBounds;\n\n    // pointOnSurface takes normalized [0,1] UV coords.\n    // (0,0) → actual (uMin, vMin), (1,0) → (uMax, vMin), (0,1) → (uMin, vMax)\n    let p00 = face.pointOnSurface(0, 0);\n    let p10 = face.pointOnSurface(1, 0);\n    let p01 = face.pointOnSurface(0, 1);\n\n    let du = uMax - uMin;\n    let dv = vMax - vMin;\n\n    // Actual U and V axis unit vectors from the Geom_Plane parameterization\n    let uAxisX = (p10.x - p00.x) / du;\n    let uAxisY = (p10.y - p00.y) / du;\n    let vAxisX = (p01.x - p00.x) / dv;\n    let vAxisY = (p01.y - p00.y) / dv;\n\n    // Geom_Plane origin: world point at actual UV = (0, 0)\n    // p00 = O + uMin*U + vMin*V  =>  O = p00 - uMin*U - vMin*V\n    let planeOriginX = p00.x - uMin * uAxisX - vMin * vAxisX;\n    let planeOriginY = p00.y - uMin * uAxisY - vMin * vAxisY;\n\n    // Rotation angle of the U axis relative to world X\n    let angleDeg = (Math.atan2(uAxisY, uAxisX) * 180) / Math.PI;\n\n    // 2D cross product tells us the handedness of the UV frame.\n    // Right-handed (cross > 0): V is 90° CCW from U → pure rotation suffices.\n    // Left-handed  (cross < 0): V is 90° CW  from U → mirror Y first, then rotate.\n    let cross = uAxisX * vAxisY - uAxisY * vAxisX;\n\n    // drawFaceOutline returns 2D curves in the face's UV parameter space,\n    // but only for the OUTER wire. Holes are cut out separately: each inner\n    // wire becomes a face on the same surface (so it shares this UV frame)\n    // and its outline is subtracted.\n    // Note: innerWires() deletes the face it's called on, hence the clone.\n    let drawing = replicad.drawFaceOutline(face);\n    for (let wire of face.clone().innerWires()) {\n      let hole = replicad.drawFaceOutline(\n        replicad.makeNewFaceWithinFace(face, wire),\n      );\n      drawing = drawing.cut(hole);\n    }\n\n    // Transform to world XY: (mirror Y if left-handed) → rotate by U-axis angle → translate by plane origin.\n    if (cross < 0) {\n      drawing = drawing.mirror([1, 0], [0, 0], \"plane\"); // flip V: (u,v) → (u,-v)\n    }\n    return drawing.rotate(angleDeg).translate(planeOriginX, planeOriginY);\n  }\n\n  function project(leaf: Assembly): Assembly | null {\n    // 2D input is already flat — nothing to slice, pass it through.\n    if (!replicad.isShape3D(leaf.geometry)) {\n      return leaf;\n    }\n\n    let solid = leaf.geometry;\n\n    let finder = new replicad.FaceFinder().inPlane(\"XY\", 0);\n    let faces = finder.applyFilter(solid);\n\n    if (faces.length === 0) {\n      let bounds = solid.boundingBox.bounds;\n      let margin = 1;\n      let w = bounds[1][0] - bounds[0][0] + 2 * margin;\n      let h = bounds[1][1] - bounds[0][1] + 2 * margin;\n      let cx = (bounds[0][0] + bounds[1][0]) / 2;\n      let cy = (bounds[0][1] + bounds[1][1]) / 2;\n      let maxZ = bounds[1][2] + margin;\n\n      let upperBox = replicad\n        .drawRectangle(w, h)\n        .sketchOnPlane(\"XY\")\n        .extrude(maxZ)\n        .translate(cx, cy, 0);\n\n      let cut = solid.cut(upperBox);\n      faces = finder.applyFilter(cut);\n    }\n\n    // Part doesn't reach the XY plane — drop it from the slice.\n    if (faces.length === 0) {\n      return null;\n    }\n\n    // A slice can have several disjoint regions — one face each. Merge them all.\n    let drawing = null;\n    for (let face of faces) {\n      let faceDrawing = faceToDrawing(face);\n      drawing = drawing ? drawing.fuse(faceDrawing) : faceDrawing;\n    }\n\n    leaf.geometry = drawing;\n    leaf.tags = [];\n    return leaf;\n  }\n\n  // Manual tree-walk so dropped (null) leaves are actually removed —\n  // the framework's onLeafs discards a callback's null return for leaves.\n  function rebuild(node: Assembly): Assembly | null {\n    if (Array.isArray(node.geometry)) {\n      node.geometry = node.geometry\n        .map(rebuild)\n        .filter((child) => child !== null);\n      return node.geometry.length === 0 ? null : node;\n    }\n    return project(node);\n  }\n\n  return (rebuild(shape) ?? new Assembly({ geometry: [] })) as Assembly;\n}",
+      "compiledCode": "\"use strict\";\nfunction run(shape) {\n    // Convert one planar face (outer boundary minus its holes) to a world-XY Drawing.\n    function faceToDrawing(face) {\n        let { uMin, uMax, vMin, vMax } = face.UVBounds;\n        // pointOnSurface takes normalized [0,1] UV coords.\n        // (0,0) → actual (uMin, vMin), (1,0) → (uMax, vMin), (0,1) → (uMin, vMax)\n        let p00 = face.pointOnSurface(0, 0);\n        let p10 = face.pointOnSurface(1, 0);\n        let p01 = face.pointOnSurface(0, 1);\n        let du = uMax - uMin;\n        let dv = vMax - vMin;\n        // Actual U and V axis unit vectors from the Geom_Plane parameterization\n        let uAxisX = (p10.x - p00.x) / du;\n        let uAxisY = (p10.y - p00.y) / du;\n        let vAxisX = (p01.x - p00.x) / dv;\n        let vAxisY = (p01.y - p00.y) / dv;\n        // Geom_Plane origin: world point at actual UV = (0, 0)\n        // p00 = O + uMin*U + vMin*V  =>  O = p00 - uMin*U - vMin*V\n        let planeOriginX = p00.x - uMin * uAxisX - vMin * vAxisX;\n        let planeOriginY = p00.y - uMin * uAxisY - vMin * vAxisY;\n        // Rotation angle of the U axis relative to world X\n        let angleDeg = (Math.atan2(uAxisY, uAxisX) * 180) / Math.PI;\n        // 2D cross product tells us the handedness of the UV frame.\n        // Right-handed (cross > 0): V is 90° CCW from U → pure rotation suffices.\n        // Left-handed  (cross < 0): V is 90° CW  from U → mirror Y first, then rotate.\n        let cross = uAxisX * vAxisY - uAxisY * vAxisX;\n        // drawFaceOutline returns 2D curves in the face's UV parameter space,\n        // but only for the OUTER wire. Holes are cut out separately: each inner\n        // wire becomes a face on the same surface (so it shares this UV frame)\n        // and its outline is subtracted.\n        // Note: innerWires() deletes the face it's called on, hence the clone.\n        let drawing = replicad.drawFaceOutline(face);\n        for (let wire of face.clone().innerWires()) {\n            let hole = replicad.drawFaceOutline(replicad.makeNewFaceWithinFace(face, wire));\n            drawing = drawing.cut(hole);\n        }\n        // Transform to world XY: (mirror Y if left-handed) → rotate by U-axis angle → translate by plane origin.\n        if (cross < 0) {\n            drawing = drawing.mirror([1, 0], [0, 0], \"plane\"); // flip V: (u,v) → (u,-v)\n        }\n        return drawing.rotate(angleDeg).translate(planeOriginX, planeOriginY);\n    }\n    function project(leaf) {\n        // 2D input is already flat — nothing to slice, pass it through.\n        if (!replicad.isShape3D(leaf.geometry)) {\n            return leaf;\n        }\n        let solid = leaf.geometry;\n        let finder = new replicad.FaceFinder().inPlane(\"XY\", 0);\n        let faces = finder.applyFilter(solid);\n        if (faces.length === 0) {\n            let bounds = solid.boundingBox.bounds;\n            let margin = 1;\n            let w = bounds[1][0] - bounds[0][0] + 2 * margin;\n            let h = bounds[1][1] - bounds[0][1] + 2 * margin;\n            let cx = (bounds[0][0] + bounds[1][0]) / 2;\n            let cy = (bounds[0][1] + bounds[1][1]) / 2;\n            let maxZ = bounds[1][2] + margin;\n            let upperBox = replicad\n                .drawRectangle(w, h)\n                .sketchOnPlane(\"XY\")\n                .extrude(maxZ)\n                .translate(cx, cy, 0);\n            let cut = solid.cut(upperBox);\n            faces = finder.applyFilter(cut);\n        }\n        // Part doesn't reach the XY plane — drop it from the slice.\n        if (faces.length === 0) {\n            return null;\n        }\n        // A slice can have several disjoint regions — one face each. Merge them all.\n        let drawing = null;\n        for (let face of faces) {\n            let faceDrawing = faceToDrawing(face);\n            drawing = drawing ? drawing.fuse(faceDrawing) : faceDrawing;\n        }\n        leaf.geometry = drawing;\n        leaf.tags = [];\n        return leaf;\n    }\n    // Manual tree-walk so dropped (null) leaves are actually removed —\n    // the framework's onLeafs discards a callback's null return for leaves.\n    function rebuild(node) {\n        if (Array.isArray(node.geometry)) {\n            node.geometry = node.geometry\n                .map(rebuild)\n                .filter((child) => child !== null);\n            return node.geometry.length === 0 ? null : node;\n        }\n        return project(node);\n    }\n    return (rebuild(shape) ?? new Assembly({ geometry: [] }));\n}\n"
+    },
+    {
+      "atomType": "Rectangle",
+      "x": 0.1,
+      "y": 0.6,
+      "uniqueID": "id-1252",
+      "ioValues": [
+        {
+          "name": "x length",
+          "ioValue": 10
+        },
+        {
+          "name": "y length",
+          "ioValue": 10
+        }
+      ]
+    },
+    {
+      "atomType": "Extrude",
+      "x": 0.3,
+      "y": 0.8,
+      "uniqueID": "id-1256",
+      "ioValues": [
+        {
+          "name": "geometry",
+          "ioValue": "__GEOMETRY_INPUT__"
+        },
+        {
+          "name": "height",
+          "ioValue": 10
+        }
+      ]
+    },
+    {
+      "atomType": "Move",
+      "x": 0.3,
+      "y": 0.8,
+      "uniqueID": "id-1260",
+      "ioValues": [
+        {
+          "name": "geometry",
+          "ioValue": "__GEOMETRY_INPUT__"
+        },
+        {
+          "name": "xDist",
+          "ioValue": 20,
+          "currentEquation": "20"
+        },
+        {
+          "name": "yDist",
+          "ioValue": 0
+        },
+        {
+          "name": "zDist",
+          "ioValue": 0
+        }
+      ]
+    },
+    {
+      "atomType": "Rotate",
+      "x": 0.4,
+      "y": 0.8,
+      "uniqueID": "id-1266",
+      "ioValues": [
+        {
+          "name": "geometry",
+          "ioValue": "__GEOMETRY_INPUT__"
+        },
+        {
+          "name": "x-axis degrees",
+          "ioValue": 0
+        },
+        {
+          "name": "y-axis degrees",
+          "ioValue": 0
+        },
+        {
+          "name": "z-axis degrees",
+          "ioValue": 30,
+          "currentEquation": "30"
+        }
+      ]
+    },
+    {
+      "atomType": "Circle",
+      "x": 0.1,
+      "y": 0.8,
+      "uniqueID": "id-1272",
+      "ioValues": [
+        {
+          "name": "diameter",
+          "ioValue": 4,
+          "currentEquation": "4"
+        }
+      ]
+    },
+    {
+      "atomType": "Difference",
+      "x": 0.2,
+      "y": 0.8,
+      "uniqueID": "id-1275",
+      "ioValues": [
+        {
+          "name": "retain",
+          "ioValue": "__GEOMETRY_INPUT__"
+        },
+        {
+          "name": "remove",
+          "ioValue": "__GEOMETRY_INPUT__"
+        }
+      ]
+    },
+    {
+      "atomType": "Rotate",
+      "x": 0.6,
+      "y": 0.8,
+      "uniqueID": "id-1279",
+      "ioValues": [
+        {
+          "name": "geometry",
+          "ioValue": "__GEOMETRY_INPUT__"
+        },
+        {
+          "name": "x-axis degrees",
+          "ioValue": -10,
+          "currentEquation": "-10"
+        },
+        {
+          "name": "y-axis degrees",
+          "ioValue": 0
+        },
+        {
+          "name": "z-axis degrees",
+          "ioValue": 0
+        }
+      ]
+    },
+    {
+      "atomType": "Input",
+      "x": 0,
+      "y": 0.4,
+      "uniqueID": "id-1285",
+      "type": "geometry",
+      "options": []
+    }
+  ],
+  "allConnectors": [
+    {
+      "ap2Name": "number or geometry",
+      "ap1ID": "id-1242",
+      "ap2ID": "id-1240"
+    },
+    {
+      "ap2Name": "retain",
+      "ap1ID": "id-1252",
+      "ap2ID": "id-1275"
+    },
+    {
+      "ap2Name": "geometry",
+      "ap1ID": "id-1256",
+      "ap2ID": "id-1260"
+    },
+    {
+      "ap2Name": "geometry",
+      "ap1ID": "id-1260",
+      "ap2ID": "id-1266"
+    },
+    {
+      "ap2Name": "geometry",
+      "ap1ID": "id-1266",
+      "ap2ID": "id-1279"
+    },
+    {
+      "ap2Name": "remove",
+      "ap1ID": "id-1272",
+      "ap2ID": "id-1275"
+    },
+    {
+      "ap2Name": "geometry",
+      "ap1ID": "id-1275",
+      "ap2ID": "id-1256"
+    },
+    {
+      "ap2Name": "shape",
+      "ap1ID": "id-1285",
+      "ap2ID": "id-1242"
+    }
+  ],
+  "unitsKey": "MM",
+  "fileTypeVersion": 1,
+  "filetypeVersion": 1
 }
